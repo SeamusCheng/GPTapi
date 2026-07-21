@@ -17,9 +17,9 @@ import (
 	"aurora/httpclient"
 	"aurora/internal/accounts"
 	"aurora/internal/sseparser"
+	"aurora/typings"
 	chatgpt_types "aurora/typings/chatgpt"
 	official_types "aurora/typings/official"
-	"aurora/typings"
 
 	"github.com/bogdanfinn/websocket"
 )
@@ -81,27 +81,28 @@ func parseConversationEvent(line string, state *sseparser.PatchState, model stri
 		return conversationStreamEvent{response: state.Response, messageID: state.Response.Message.ID, channel: state.Channel}, true
 	}
 
-	if patchPath, ok := raw["p"].(string); ok {
-		patchOperation, _ := raw["o"].(string)
-		if patchPath == "" && patchOperation == "patch" {
-			if batch, ok := raw["v"].([]interface{}); ok {
-				applied := false
-				for _, item := range batch {
-					op, ok := item.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					subPath, _ := op["p"].(string)
-					subOp, _ := op["o"].(string)
-					if sseparser.ApplyPatch(state, subPath, subOp, op["v"]) {
-						applied = true
-					}
+	patchPath, _ := raw["p"].(string)
+	patchOperation, _ := raw["o"].(string)
+	if patchPath == "" && patchOperation == "patch" {
+		if batch, ok := raw["v"].([]interface{}); ok {
+			applied := false
+			for _, item := range batch {
+				op, ok := item.(map[string]interface{})
+				if !ok {
+					continue
 				}
-				if applied {
-					return conversationStreamEvent{response: state.Response, messageID: state.Response.Message.ID, channel: state.Channel}, true
+				subPath, _ := op["p"].(string)
+				subOp, _ := op["o"].(string)
+				if sseparser.ApplyPatch(state, subPath, subOp, op["v"]) {
+					applied = true
 				}
 			}
+			if applied {
+				return conversationStreamEvent{response: state.Response, messageID: state.Response.Message.ID, channel: state.Channel}, true
+			}
 		}
+	}
+	if _, ok := raw["p"].(string); ok {
 		if sseparser.ApplyPatch(state, patchPath, patchOperation, raw["v"]) {
 			return conversationStreamEvent{response: state.Response, messageID: state.Response.Message.ID, channel: state.Channel}, true
 		}
@@ -551,6 +552,9 @@ readLoop:
 				finish_reason = original_response.Message.Metadata.FinishDetails.Type
 			}
 			if isEnd {
+				if finish_reason == "" {
+					finish_reason = "stop"
+				}
 				if stream {
 					final_line := official_types.StopChunkWithConversation(finish_reason, model, convId)
 					c.Writer.WriteString("data: " + final_line.String() + "\n\n")

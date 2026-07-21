@@ -13,15 +13,15 @@ import (
 	"aurora/httpclient/bogdanfinn"
 	"aurora/internal/accounts"
 	"aurora/internal/chatgpt"
+	"aurora/internal/config"
 	chatgpt_types "aurora/typings/chatgpt"
 	officialtypes "aurora/typings/official"
 	"aurora/util"
-	"aurora/internal/config"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	fhttp "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/websocket"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 var ErrNoAvailable = errors.New("no available account of the requested type")
@@ -246,6 +246,62 @@ func writeChatCompletionStreamDone(c *gin.Context, stopSent bool, model string, 
 		finalLine := officialtypes.StopChunkWithConversation("stop", model, conversationID)
 		c.Writer.WriteString("data: " + finalLine.String() + "\n\n")
 		c.Writer.Flush()
+	}
+	c.Writer.WriteString("data: [DONE]\n\n")
+	c.Writer.Flush()
+}
+
+// writeToolCallingStreamResponse converts the internally buffered tool result
+// back to the streaming protocol requested by OpenAI-compatible clients.
+func writeToolCallingStreamResponse(c *gin.Context, text string, toolCalls []officialtypes.ToolCall, inputTokens, outputTokens int, model, conversationID string, streamOptions *officialtypes.StreamOptions) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+
+	roleChunk := officialtypes.NewChatCompletionChunk("", model)
+	roleChunk.Choices[0].Delta.Role = "assistant"
+	c.Writer.WriteString("data: " + roleChunk.String() + "\n\n")
+
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		deltas := make([]officialtypes.ToolCallDelta, len(toolCalls))
+		for i, call := range toolCalls {
+			deltas[i] = officialtypes.ToolCallDelta{
+				Index: i,
+				ID:    call.ID,
+				Type:  call.Type,
+				Function: officialtypes.ToolCallFuncDelta{
+					Name:      call.Function.Name,
+					Arguments: call.Function.Arguments,
+				},
+			}
+		}
+		chunk := officialtypes.NewChatCompletionChunk("", model)
+		chunk.Choices[0].Delta.ToolCalls = deltas
+		c.Writer.WriteString("data: " + chunk.String() + "\n\n")
+		finishReason = "tool_calls"
+	} else if text != "" {
+		chunk := officialtypes.NewChatCompletionChunk(text, model)
+		c.Writer.WriteString("data: " + chunk.String() + "\n\n")
+	}
+
+	stopChunk := officialtypes.StopChunkWithConversation(finishReason, model, conversationID)
+	c.Writer.WriteString("data: " + stopChunk.String() + "\n\n")
+	if streamOptions != nil && streamOptions.IncludeUsage {
+		usageChunk := officialtypes.ChatCompletionChunk{
+			ID:      "chatcmpl-QXlha2FBbmROaXhpZUFyZUF3ZXNvbWUK",
+			Object:  "chat.completion.chunk",
+			Created: 0,
+			Model:   model,
+			Choices: []officialtypes.Choices{},
+			Usage: &officialtypes.StreamUsage{
+				PromptTokens:     inputTokens,
+				CompletionTokens: outputTokens,
+				TotalTokens:      inputTokens + outputTokens,
+			},
+		}
+		c.Writer.WriteString("data: " + usageChunk.String() + "\n\n")
 	}
 	c.Writer.WriteString("data: [DONE]\n\n")
 	c.Writer.Flush()

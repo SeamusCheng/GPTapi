@@ -2,8 +2,8 @@ package chatgpt
 
 import (
 	"aurora/httpclient"
-	"aurora/internal/sseparser"
 	"aurora/internal/accounts"
+	"aurora/internal/sseparser"
 	"aurora/typings/chatgpt"
 	"encoding/json"
 	"fmt"
@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	fhttp "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/websocket"
+	"github.com/gin-gonic/gin"
 )
 
 type fakeAuroraClient struct {
@@ -410,7 +410,7 @@ func (s *sequentialAuroraClient) Request(method httpclient.HttpMethod, url strin
 	return s.responses[idx], nil
 }
 
-func (s *sequentialAuroraClient) SetProxy(url string) error { return nil }
+func (s *sequentialAuroraClient) SetProxy(url string) error                        { return nil }
 func (s *sequentialAuroraClient) SetCookies(rawUrl string, cookies []*http.Cookie) {}
 func (s *sequentialAuroraClient) GetCookies(rawUrl string) []*http.Cookie {
 	// 返回一个 cf_clearance,让 ensureBootstrapped 直接走 fast-path
@@ -857,6 +857,28 @@ func TestHandlerAppliesBatchPatch(t *testing.T) {
 	}
 	if result.ParentMessageID != "msg-batch" {
 		t.Fatalf("parent message id = %q, want msg-batch", result.ParentMessageID)
+	}
+}
+
+func TestHandlerAppliesBatchPatchWithoutRootPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := strings.Join([]string{
+		`data: {"v":{"conversation_id":"conv-batch","message":{"id":"msg-batch","author":{"role":"assistant"},"channel":"final","content":{"content_type":"text","parts":[""]},"metadata":{"message_type":"next"},"recipient":"all"}}}`,
+		`data: {"o":"patch","v":[{"p":"/message/content/parts/0","o":"append","v":"AURORA_OK"},{"p":"/message/end_turn","o":"replace","v":true}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	response := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+	writer := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(writer)
+
+	result := HandlerDetailedWithOptions(c, response, nil, nil, "request-id", chatGPTRequestForTest(), true, "auto", HandlerDetailedOptions{})
+
+	if result.Text != "AURORA_OK" {
+		t.Fatalf("text = %q, want AURORA_OK", result.Text)
+	}
+	if !strings.Contains(writer.Body.String(), `"finish_reason":"stop"`) {
+		t.Fatalf("stream is missing stop finish reason: %s", writer.Body.String())
 	}
 }
 

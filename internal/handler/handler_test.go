@@ -58,6 +58,55 @@ func TestWriteChatCompletionStreamDoneSkipsDuplicateStop(t *testing.T) {
 
 // ─── Test: toolCallingEnabled ────────────────────────────────────
 
+func TestWriteToolCallingStreamResponseWithText(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	writer := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(writer)
+
+	writeToolCallingStreamResponse(c, "HERMES_OK", nil, 10, 2, "auto", "conv-text", &officialtypes.StreamOptions{IncludeUsage: true})
+
+	lines := sseDataLines(writer.Body.String())
+	if len(lines) != 5 {
+		t.Fatalf("data line count = %d, want 5; output: %s", len(lines), writer.Body.String())
+	}
+	if !strings.Contains(lines[1], `"content":"HERMES_OK"`) {
+		t.Fatalf("content chunk missing: %s", lines[1])
+	}
+	if !strings.Contains(lines[2], `"finish_reason":"stop"`) {
+		t.Fatalf("stop chunk missing: %s", lines[2])
+	}
+	if !strings.Contains(lines[3], `"total_tokens":12`) || lines[4] != "[DONE]" {
+		t.Fatalf("usage or done chunk missing: %#v", lines)
+	}
+}
+
+func TestWriteToolCallingStreamResponseWithToolCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	writer := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(writer)
+	calls := []officialtypes.ToolCall{{
+		ID:   "call-1",
+		Type: "function",
+		Function: officialtypes.ToolCallFunc{
+			Name:      "read_file",
+			Arguments: `{"path":"README.md"}`,
+		},
+	}}
+
+	writeToolCallingStreamResponse(c, "", calls, 10, 3, "auto", "conv-tool", nil)
+
+	lines := sseDataLines(writer.Body.String())
+	if len(lines) != 4 {
+		t.Fatalf("data line count = %d, want 4; output: %s", len(lines), writer.Body.String())
+	}
+	if !strings.Contains(lines[1], `"tool_calls"`) || !strings.Contains(lines[1], `"name":"read_file"`) {
+		t.Fatalf("tool call chunk missing: %s", lines[1])
+	}
+	if !strings.Contains(lines[2], `"finish_reason":"tool_calls"`) || lines[3] != "[DONE]" {
+		t.Fatalf("tool stop or done chunk missing: %#v", lines)
+	}
+}
+
 func TestToolCallingEnabledFromConfig(t *testing.T) {
 	okCfg := &config.Config{ToolCallingEnabled: true}
 	disabledCfg := &config.Config{ToolCallingEnabled: false}

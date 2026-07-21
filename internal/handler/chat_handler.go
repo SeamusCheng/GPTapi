@@ -3,10 +3,11 @@ package handler
 import (
 	"fmt"
 	"io"
-"net/http"
+	"net/http"
 	"os"
 	"time"
 
+	chatgptrequestconverter "aurora/conversion/requests/chatgpt"
 	"aurora/httpclient/bogdanfinn"
 	"aurora/internal/accounts"
 	"aurora/internal/chatgpt"
@@ -15,7 +16,6 @@ import (
 	chatgpt_types "aurora/typings/chatgpt"
 	officialtypes "aurora/typings/official"
 	"aurora/util"
-	chatgptrequestconverter "aurora/conversion/requests/chatgpt"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -88,6 +88,7 @@ func (h *ChatHandler) Nightmare(c *gin.Context) {
 
 	// 工具调用模式判定
 	toolsEnabled := toolCallingEnabled(original_request.Tools, h.cfg)
+	streamRequested := original_request.Stream && h.cfg.StreamMode
 	if toolsEnabled && h.cfg.StreamMode {
 		original_request.Stream = false
 	}
@@ -113,7 +114,7 @@ func (h *ChatHandler) Nightmare(c *gin.Context) {
 
 	// 工具调用提前分支
 	if toolsEnabled {
-		h.handleToolCalling(c, &original_request, &client, account, &clientState, &reqModel, &uid, &proxyUrl, &input_tokens)
+		h.handleToolCalling(c, &original_request, &client, account, &clientState, &reqModel, &uid, &proxyUrl, &input_tokens, streamRequested)
 		return
 	}
 
@@ -479,7 +480,7 @@ func (h *ChatHandler) Files(c *gin.Context) {
 }
 
 // handleToolCalling 工具调用模式的主流程（对齐 initialize/handlers.go:handleToolCalling）
-func (h *ChatHandler) handleToolCalling(c *gin.Context, originalRequest *officialtypes.APIRequest, client **bogdanfinn.TlsClient, account *accounts.Account, clientState **chatgpt.ChatClientState, reqModel *string, uid *string, proxyUrl *string, inputTokens *int) {
+func (h *ChatHandler) handleToolCalling(c *gin.Context, originalRequest *officialtypes.APIRequest, client **bogdanfinn.TlsClient, account *accounts.Account, clientState **chatgpt.ChatClientState, reqModel *string, uid *string, proxyUrl *string, inputTokens *int, streamRequested bool) {
 	if account == nil || !account.Type.Satisfies(accounts.CapToolCalling) {
 		c.JSON(403, gin.H{"error": "Tool calling requires a logged-in ChatGPT account."})
 		return
@@ -570,6 +571,10 @@ func (h *ChatHandler) handleToolCalling(c *gin.Context, originalRequest *officia
 	}
 
 	if len(lastToolCalls) > 0 {
+		if streamRequested {
+			writeToolCallingStreamResponse(c, lastText, lastToolCalls, *inputTokens, util.CountToken(lastText), *reqModel, lastConversationID, originalRequest.StreamOptions)
+			return
+		}
 		c.JSON(200, officialtypes.NewChatCompletionWithToolCalls(
 			lastText, "", lastToolCalls,
 			*inputTokens, util.CountToken(lastText),
@@ -578,6 +583,10 @@ func (h *ChatHandler) handleToolCalling(c *gin.Context, originalRequest *officia
 		return
 	}
 	outputTokens := util.CountToken(lastText)
+	if streamRequested {
+		writeToolCallingStreamResponse(c, lastText, nil, *inputTokens, outputTokens, *reqModel, lastConversationID, originalRequest.StreamOptions)
+		return
+	}
 	c.JSON(200, officialtypes.NewChatCompletionWithMetadata(lastText, *inputTokens, outputTokens, *reqModel, lastConversationID, lastSentinel))
 }
 
